@@ -5,7 +5,7 @@ A tool for dumping CTFd challenges.
 ## Usage
 
 ```
-usage: CTFDumper.py [-h] [-u USERNAME] [-p PASSWORD] [--nonce-regex NONCE_REGEX] [--auth-file AUTH_FILE] [-n] [--no-file] [--no-resolve-urls] [--trust-all] [-t TEMPLATE] [-v] url
+usage: CTFDumper.py [-h] [-u USERNAME] [-p PASSWORD] [--nonce-regex NONCE_REGEX] [--auth-file AUTH_FILE] [-n] [--no-files] [--no-resolve-urls] [--trust-all] [-t TEMPLATE] [-v] url
 
 A tool for dumping CTFd challenges
 
@@ -23,7 +23,7 @@ options:
   --auth-file AUTH_FILE
                         File containing username and password, seperated by newline
   -n, --no-login        Use this option if the platform does not require authentication
-  --no-file             Do not download files
+  --no-files            Do not download files
   --no-resolve-urls     Do not download resources from embedded urls in description
   --trust-all           Will make directory as the name of the challenge, the slashes(/) character automatically be replaced with underscores(_)
   -t TEMPLATE, --template TEMPLATE

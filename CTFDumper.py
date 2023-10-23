@@ -26,7 +26,7 @@ CONFIG = {
     'password': None,
     'nonce_regex': 'name="nonce"(?:[^<>]+)?value="([0-9a-f]{64})"',
     'base_url': None,
-    'no_file': None,
+    'no_files': None,
     'no_resolve_urls': None,
     'no_login': None,
     'template': os.path.join(
@@ -92,7 +92,7 @@ def setup() -> None:
     )
 
     parser.add_argument(
-        '--no-file',
+        '--no-files',
         help='Do not download files',
         action='store_true'
     )
@@ -125,7 +125,7 @@ def setup() -> None:
     args = parser.parse_args()
 
     CONFIG['base_url'] = args.url
-    CONFIG['no_file'] = args.no_file
+    CONFIG['no_files'] = args.no_files
     CONFIG['no_resolve_urls'] = args.no_resolve_urls
     CONFIG['no_login'] = args.no_login
 
@@ -277,7 +277,7 @@ def run() -> None:
             rendered = template.render(challenge=challenge)
             f.write(rendered)
 
-        if CONFIG['no_file']:
+        if CONFIG['no_files']:
             continue
 
         if 'files' in challenge:
