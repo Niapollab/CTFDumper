@@ -8,6 +8,7 @@ import logging
 import logging.config
 import os
 import re
+import urllib.parse
 
 
 banner = r"""
@@ -26,6 +27,7 @@ CONFIG = {
     'nonce_regex': 'name="nonce"(?:[^<>]+)?value="([0-9a-f]{64})"',
     'base_url': None,
     'no_file': None,
+    'no_resolve_urls': None,
     'no_login': None,
     'template': os.path.join(
         os.path.dirname(os.path.realpath(__file__)), 'templates/default.md'
@@ -45,6 +47,7 @@ logging.config.dictConfig(
 
 logger = logging.getLogger(__name__)
 session = Session()
+url_pattern = re.compile(r'((https?):((\/\/)|(\\\\))+[\w\d:#@%\/;$~_?\+-=\\\.&]*)')
 
 
 def welcome() -> None:
@@ -95,6 +98,12 @@ def setup() -> None:
     )
 
     parser.add_argument(
+        '--no-resolve-urls',
+        help='Do not download resources from embedded urls in description',
+        action='store_true'
+    )
+
+    parser.add_argument(
         '--trust-all',
         help='Will make directory as the name of the challenge, the slashes(/) character will automatically be replaced with underscores(_)',
         action='store_true'
@@ -117,6 +126,7 @@ def setup() -> None:
 
     CONFIG['base_url'] = args.url
     CONFIG['no_file'] = args.no_file
+    CONFIG['no_resolve_urls'] = args.no_resolve_urls
     CONFIG['no_login'] = args.no_login
 
     if not args.no_login:
@@ -217,6 +227,34 @@ def get_challenges() -> Iterable[dict[str, str]]:
         yield content
 
 
+def get_clean_filename(url: str) -> str:
+    return os.path.basename(urlsplit(url).path)
+
+
+def resolve_urls(content: str, filepath: str = '.') -> str:
+    def __replacer(match: re.Match[str]) -> str:
+        url = match[1]
+
+        try:
+            with session.get(url, stream=True) as response:
+                real_url = urllib.parse.unquote(response.url)
+                logger.debug(f'Fetching {real_url}')
+
+                filename = get_clean_filename(real_url)
+
+                logger.info(f'Downloading {filename} into {filepath}')
+                with open(os.path.join(filepath, filename), 'wb') as f:
+                    f.write(response.content)
+
+                url = f'./{filename}'
+        except Exception:
+            logger.error(f'Failed downloading file from url "{url}"!')
+
+        return url
+
+    return url_pattern.sub(__replacer, content)
+
+
 def run() -> None:
     hostname = urlparse(CONFIG['base_url']).hostname
     template = Template(open(CONFIG['template']).read())
@@ -232,6 +270,9 @@ def run() -> None:
             logger.info(f'Creating directory {filepath}')
             os.makedirs(filepath)
 
+        if not CONFIG['no_resolve_urls']:
+            challenge['description'] = resolve_urls(challenge['description'], filepath)
+
         with open(os.path.join(filepath, 'README.md'), 'w+') as f:
             rendered = template.render(challenge=challenge)
             f.write(rendered)
@@ -241,7 +282,7 @@ def run() -> None:
 
         if 'files' in challenge:
             for filename in challenge['files']:
-                clean_filename = os.path.basename(urlsplit(filename).path)
+                clean_filename = get_clean_filename(filename)
                 fetch_file(filepath, filename, clean_filename)
 
 
