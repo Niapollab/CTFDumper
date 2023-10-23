@@ -273,7 +273,7 @@ def run() -> None:
         if not CONFIG['no_resolve_urls']:
             challenge['description'] = resolve_urls(challenge['description'], filepath)
 
-        with open(os.path.join(filepath, 'README.md'), 'w+') as f:
+        with open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as f:
             rendered = template.render(challenge=challenge)
             f.write(rendered)
 
