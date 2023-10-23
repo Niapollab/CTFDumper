@@ -5,9 +5,7 @@ A tool for dumping CTFd challenges.
 ## Usage
 
 ```
-usage: CTFDumper.py [-h] [-u USERNAME] [-p PASSWORD] [--auth-file AUTH_FILE]
-                    [-n] [--no-file] [--trust-all] [-t TEMPLATE] [-v]
-                    url
+usage: CTFDumper.py [-h] [-u USERNAME] [-p PASSWORD] [--auth-file AUTH_FILE] [-n] [--no-file] [--trust-all] [-t TEMPLATE] [-v] url
 
 A tool for dumping CTFd challenges
 

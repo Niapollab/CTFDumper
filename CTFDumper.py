@@ -1,99 +1,116 @@
 #!/usr/bin/env python3
-banner = r'''
+from argparse import ArgumentParser
+from jinja2 import Template
+from requests import Session
+from requests.compat import urljoin, urlparse, urlsplit
+from typing import Iterable
+import logging
+import logging.config
+import os
+import re
+
+
+banner = r"""
   ____ _____ _____ ____
  / ___|_   _|  ___|  _ \ _   _ _ __ ___  _ __   ___ _ __
 | |     | | | |_  | | | | | | | '_ ` _ \| '_ \ / _ \ '__|
 | |___  | | |  _| | |_| | |_| | | | | | | |_) |  __/ |
  \____| |_| |_|   |____/ \__,_|_| |_| |_| .__/ \___|_|
                                         |_|
-'''
-from argparse import ArgumentParser
-from requests import Session
-from requests.compat import urljoin, urlparse, urlsplit
-from typing import Generator, List, Union
-from jinja2 import Template
-import logging
-import logging.config
-import re, os
+"""
+
 
 CONFIG = {
     'username': None,
     'password': None,
-	'nonce_regex': 'name="nonce"(?:[^<>]+)?value="([0-9a-f]{64})"',
+    'nonce_regex': 'name="nonce"(?:[^<>]+)?value="([0-9a-f]{64})"',
     'base_url': None,
     'no_file': None,
     'no_login': None,
-    'template': os.path.join(os.path.dirname(os.path.realpath(__file__)), 'templates/default.md'),
+    'template': os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), 'templates/default.md'
+    ),
     'verbose': logging.INFO,
-    'blacklist': r'[^a-zA-Z0-9_\-\. ]',
+    'blacklist': r'[^a-zA-Z0-9_\-\. ]'
 }
 
-logging.config.dictConfig({
-    'version': 1,
-    'disable_existing_loggers': True,
-})
+
+logging.config.dictConfig(
+    {
+        'version': 1,
+        'disable_existing_loggers': True
+    }
+)
+
 
 logger = logging.getLogger(__name__)
 session = Session()
 
+
 def welcome() -> None:
     logger.info(banner)
+
 
 def setup() -> None:
     parser = ArgumentParser(description='A tool for dumping CTFd challenges')
 
     parser.add_argument(
         'url',
-        help='Platform URL',
+        help='Platform URL'
     )
 
     parser.add_argument(
-        '-u', '--username',
-        help='Platfrom username',
+        '-u',
+        '--username',
+        help='Platfrom username'
     )
 
     parser.add_argument(
-        '-p', '--password',
-        help='Platform password',
+        '-p',
+        '--password',
+        help='Platform password'
     )
 
     parser.add_argument(
         '--nonce-regex',
-        help='Platform nonce regex',
+        help='Platform nonce regex'
     )
 
     parser.add_argument(
         '--auth-file',
-        help='File containing username and password, seperated by newline',
+        help='File containing username and password, seperated by newline'
     )
 
     parser.add_argument(
-        '-n', '--no-login',
+        '-n',
+        '--no-login',
         help='Use this option if the platform does not require authentication',
-        action='store_true',
+        action='store_true'
     )
 
     parser.add_argument(
         '--no-file',
-        help='Don\'t download files',
-        action='store_true',
+        help='Do not download files',
+        action='store_true'
     )
 
     parser.add_argument(
         '--trust-all',
         help='Will make directory as the name of the challenge, the slashes(/) character will automatically be replaced with underscores(_)',
-        action='store_true',
+        action='store_true'
     )
 
     parser.add_argument(
-        '-t', '--template',
-        help='Custom template path',
+        '-t',
+        '--template',
+        help='Custom template path'
     )
 
     parser.add_argument(
-        '-v', '--verbose',
+        '-v',
+        '--verbose',
         help='Verbose',
-        action='store_true',
+        action='store_true'
     )
 
     args = parser.parse_args()
@@ -133,9 +150,13 @@ def setup() -> None:
     logging.addLevelName(logging.INFO, '[+]')
     logging.addLevelName(logging.DEBUG, '[*]')
 
-def get_nonce() -> str:
+
+def get_nonce() -> str | None:
     res = session.get(urljoin(CONFIG['base_url'], '/login'))
-    return re.search(CONFIG['nonce_regex'], res.text).group(1)
+    match = re.search(CONFIG['nonce_regex'], res.text)
+
+    return match[1] if match else None
+
 
 def login() -> None:
     nonce = get_nonce()
@@ -146,7 +167,7 @@ def login() -> None:
         data={
             'name': CONFIG['username'],
             'password': CONFIG['password'],
-            'nonce': nonce,
+            'nonce': nonce
         }
     )
 
@@ -154,19 +175,18 @@ def login() -> None:
         logger.error('Login failed!')
         exit(1)
 
+
 def logout() -> None:
     logger.info('Done! Logging you out!')
     session.get(urljoin(CONFIG['base_url'], '/logout'))
 
-def fetch(url: str) -> Union[List[dict], dict]:
+
+def fetch(url: str) -> list[dict[str, str]] | dict[str, str] | None:
     logger.debug(f'Fetching {url}')
     res = session.get(url)
 
-    if not res.ok or not res.json()['success']:
-        logger.error('Failed fetching challenge!')
-        exit(1)
+    return  res.json()['data'] if res.ok and res.json()['success'] else None
 
-    return res.json()['data']
 
 def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
     logger.info(f'Downloading {clean_filename} into {filepath}')
@@ -175,12 +195,27 @@ def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
     with open(os.path.join(filepath, clean_filename), 'wb') as f:
         f.write(res.content)
 
-def get_challenges() -> Generator[dict, None, None]:
+
+def get_challenges() -> Iterable[dict[str, str]]:
     logger.debug('Getting challenges')
     challenges = fetch(urljoin(CONFIG['base_url'], '/api/v1/challenges'))
 
+    if not challenges or not isinstance(challenges, list):
+        logger.error('Failed fetching challenges!')
+        exit(1)
+
     for challenge in challenges:
-        yield fetch(urljoin(CONFIG['base_url'], f'/api/v1/challenges/{challenge["id"]}'))
+        id = challenge['id']
+        challenge_path = f'/api/v1/challenges/{id}'
+        url = urljoin(CONFIG['base_url'], challenge_path)
+
+        content = fetch(url)
+        if not content or not isinstance(content, dict):
+            logger.warning(f'Failed fetching challenge with id "{id}"!')
+            continue
+
+        yield content
+
 
 def run() -> None:
     hostname = urlparse(CONFIG['base_url']).hostname
@@ -209,6 +244,7 @@ def run() -> None:
                 clean_filename = os.path.basename(urlsplit(filename).path)
                 fetch_file(filepath, filename, clean_filename)
 
+
 def main() -> None:
     setup()
     welcome()
@@ -219,6 +255,7 @@ def main() -> None:
         login()
         run()
         logout()
+
 
 if __name__ == '__main__':
     main()
