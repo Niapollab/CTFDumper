@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 from argparse import ArgumentParser
 from jinja2 import Template
-from requests import Session
-from requests.compat import urljoin, urlparse, urlsplit
-from typing import Iterable
+from aiohttp import ClientSession
+from urllib.parse import urljoin, urlparse, urlsplit
+from typing import AsyncIterable
 import logging
 import logging.config
 import os
 import re
-import urllib.parse
+import aiofiles
+import aiofiles.os
+from asyncio import run
 
 
 banner = r"""
@@ -47,7 +49,6 @@ logging.config.dictConfig(
 
 
 logger = logging.getLogger(__name__)
-session = Session()
 url_pattern = re.compile(r'((https?):((\/\/)|(\\\\))+[\w\d:#@%\/;$~_?\+-=\\\.&]*)')
 
 
@@ -56,7 +57,7 @@ def welcome() -> None:
         print(banner)
 
 
-def setup() -> None:
+async def setup() -> None:
     parser = ArgumentParser(description='A tool for dumping CTFd challenges')
 
     parser.add_argument(
@@ -146,9 +147,9 @@ def setup() -> None:
         CONFIG['nonce_regex'] = args.nonce_regex
 
     if args.auth_file:
-        with open(args.auth_file, 'r') as f:
-            CONFIG['username'] = f.readline().strip()
-            CONFIG['password'] = f.readline().strip()
+        async with aiofiles.open(args.auth_file, 'r') as file:
+            CONFIG['username'] = (await file.readline()).strip()
+            CONFIG['password'] = (await file.readline()).strip()
 
     if args.trust_all:
         CONFIG['blacklist'] = '/'
@@ -170,18 +171,18 @@ def setup() -> None:
     logging.addLevelName(logging.DEBUG, '[*]')
 
 
-def get_nonce() -> str | None:
-    res = session.get(urljoin(CONFIG['base_url'], '/login'))
-    match = re.search(CONFIG['nonce_regex'], res.text)
+async def get_nonce() -> str | None:
+    response = await session.get(urljoin(CONFIG['base_url'], '/login'))
+    match = re.search(CONFIG['nonce_regex'], await response.text())
 
     return match[1] if match else None
 
 
-def login() -> None:
-    nonce = get_nonce()
+async def login() -> None:
+    nonce = await get_nonce()
     logger.debug(f'Nonce: {nonce}')
 
-    res = session.post(
+    response = await session.post(
         urljoin(CONFIG['base_url'], '/login'),
         data={
             'name': CONFIG['username'],
@@ -190,34 +191,37 @@ def login() -> None:
         }
     )
 
-    if 'incorrect' in res.text:
+    if 'incorrect' in await response.text():
         logger.error('Login failed!')
         exit(1)
 
 
-def logout() -> None:
+async def logout() -> None:
+    await session.get(urljoin(CONFIG['base_url'], '/logout'))
     logger.info('Done! Logging you out!')
-    session.get(urljoin(CONFIG['base_url'], '/logout'))
 
 
-def fetch(url: str) -> list[dict[str, str]] | dict[str, str] | None:
+async def fetch(url: str) -> list[dict[str, str]] | dict[str, str] | None:
     logger.debug(f'Fetching {url}')
-    res = session.get(url)
 
-    return  res.json()['data'] if res.ok and res.json()['success'] else None
+    response = await session.get(url)
+    json = await response.json()
+
+    return json['data'] if response.ok and json['success'] else None
 
 
-def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
+async def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
     logger.info(f'Downloading {clean_filename} into {filepath}')
-    res = session.get(urljoin(CONFIG['base_url'], filename), stream=True)
+    response = await session.get(urljoin(CONFIG['base_url'], filename))
 
-    with open(os.path.join(filepath, clean_filename), 'wb') as f:
-        f.write(res.content)
+    async with aiofiles.open(os.path.join(filepath, clean_filename), 'wb') as file:
+        async for data in response.content.iter_any():
+            await file.write(data)
 
 
-def get_challenges() -> Iterable[dict[str, str]]:
+async def get_challenges() -> AsyncIterable[dict[str, str]]:
     logger.debug('Getting challenges')
-    challenges = fetch(urljoin(CONFIG['base_url'], '/api/v1/challenges'))
+    challenges = await fetch(urljoin(CONFIG['base_url'], '/api/v1/challenges'))
 
     if not challenges or not isinstance(challenges, list):
         logger.error('Failed fetching challenges!')
@@ -228,7 +232,7 @@ def get_challenges() -> Iterable[dict[str, str]]:
         challenge_path = f'/api/v1/challenges/{id}'
         url = urljoin(CONFIG['base_url'], challenge_path)
 
-        content = fetch(url)
+        content = await fetch(url)
         if not content or not isinstance(content, dict):
             logger.warning(f'Failed fetching challenge with id "{id}"!')
             continue
@@ -240,51 +244,56 @@ def get_clean_filename(url: str) -> str:
     return os.path.basename(urlsplit(url).path)
 
 
-def resolve_urls(content: str, filepath: str = '.') -> str:
-    def __replacer(match: re.Match[str]) -> str:
+async def resolve_urls(content: str, filepath: str = '.') -> str:
+    result = content
+
+    for match in url_pattern.finditer(content):
         url = match[1]
 
-        try:
-            with session.get(url, stream=True) as response:
-                real_url = urllib.parse.unquote(response.url)
+        async with session.get(url) as response:
+            try:
+                real_url = response.request_info.url.human_repr()
                 logger.debug(f'Fetching {real_url}')
 
                 filename = get_clean_filename(real_url)
 
                 logger.info(f'Downloading {filename} into {filepath}')
-                with open(os.path.join(filepath, filename), 'wb') as f:
-                    f.write(response.content)
+                async with aiofiles.open(os.path.join(filepath, filename), 'wb') as file:
+                    async for data in response.content.iter_any():
+                        await file.write(data)
 
                 url = f'./{filename}'
-        except Exception:
-            logger.error(f'Failed downloading file from url "{url}"!')
+                result = result.replace(match[0], url, 1)
 
-        return url
+            except Exception:
+                logger.error(f'Failed downloading file from url "{url}"!')
 
-    return url_pattern.sub(__replacer, content)
+    return result
 
 
-def run() -> None:
+async def dump() -> None:
     hostname = urlparse(CONFIG['base_url']).hostname
-    template = Template(open(CONFIG['template']).read())
 
-    for challenge in get_challenges():
+    async with aiofiles.open(CONFIG['template'], 'r') as file:
+        template = Template(await file.read())
+
+    async for challenge in get_challenges():
         category = re.sub(CONFIG['blacklist'], '', challenge['category']).strip()
         name = re.sub(CONFIG['blacklist'], '', challenge['name']).strip()
         logger.info(f'[{category}] {name}')
 
         filepath = os.path.join(hostname, category, name)
 
-        if not os.path.exists(filepath):
+        if not await aiofiles.os.path.exists(filepath):
             logger.info(f'Creating directory {filepath}')
             os.makedirs(filepath)
 
         if not CONFIG['no_resolve_urls']:
-            challenge['description'] = resolve_urls(challenge['description'], filepath)
+            challenge['description'] = await resolve_urls(challenge['description'], filepath)
 
-        with open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as f:
+        async with aiofiles.open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as file:
             rendered = template.render(challenge=challenge)
-            f.write(rendered)
+            await file.write(rendered)
 
         if CONFIG['no_files']:
             continue
@@ -292,20 +301,22 @@ def run() -> None:
         if 'files' in challenge:
             for filename in challenge['files']:
                 clean_filename = get_clean_filename(filename)
-                fetch_file(filepath, filename, clean_filename)
+                await fetch_file(filepath, filename, clean_filename)
 
 
-def main() -> None:
-    setup()
-    welcome()
+async def main() -> None:
+    global session
+    async with ClientSession() as session:
+        await setup()
+        welcome()
 
-    if CONFIG['no_login']:
-        run()
-    else:
-        login()
-        run()
-        logout()
+        if CONFIG['no_login']:
+            await dump()
+        else:
+            await login()
+            await dump()
+            await logout()
 
 
 if __name__ == '__main__':
-    main()
+    run(main())
