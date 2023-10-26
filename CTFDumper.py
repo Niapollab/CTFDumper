@@ -29,6 +29,7 @@ CONFIG = {
     'no_files': None,
     'no_resolve_urls': None,
     'no_login': None,
+    'no_logo': None,
     'template': os.path.join(
         os.path.dirname(os.path.realpath(__file__)), 'templates/default.md'
     ),
@@ -51,7 +52,8 @@ url_pattern = re.compile(r'((https?):((\/\/)|(\\\\))+[\w\d:#@%\/;$~_?\+-=\\\.&]*
 
 
 def welcome() -> None:
-    logger.info(banner)
+    if not CONFIG['no_logo']:
+        print(banner)
 
 
 def setup() -> None:
@@ -92,6 +94,12 @@ def setup() -> None:
     )
 
     parser.add_argument(
+        '--no-logo',
+        help='Do not print logo on startup',
+        action='store_true'
+    )
+
+    parser.add_argument(
         '--no-files',
         help='Do not download files',
         action='store_true'
@@ -128,6 +136,7 @@ def setup() -> None:
     CONFIG['no_files'] = args.no_files
     CONFIG['no_resolve_urls'] = args.no_resolve_urls
     CONFIG['no_login'] = args.no_login
+    CONFIG['no_logo'] = args.no_logo
 
     if not args.no_login:
         CONFIG['username'] = args.username
