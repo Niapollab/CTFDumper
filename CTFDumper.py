@@ -3,7 +3,6 @@ from argparse import ArgumentParser
 from jinja2 import Template
 from aiohttp import ClientSession
 from urllib.parse import urljoin, urlparse, urlsplit
-from typing import AsyncIterable
 import logging
 import logging.config
 import os
@@ -210,7 +209,9 @@ async def fetch_json(url: str) -> list[dict[str, str]] | dict[str, str] | None:
     return json['data'] if response.ok and json['success'] else None
 
 
-async def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
+async def fetch_file(filepath: str, filename: str) -> None:
+    clean_filename = get_clean_filename(filename)
+
     logger.info(f'Downloading {clean_filename} into {filepath}')
     response = await session.get(urljoin(CONFIG['base_url'], filename))
 
@@ -219,7 +220,7 @@ async def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
             await file.write(data)
 
 
-async def get_challenges() -> AsyncIterable[dict[str, str]]:
+async def get_challenges() -> list[dict[str, str]]:
     logger.debug('Getting challenges')
 
     url = urljoin(CONFIG['base_url'], '/api/v1/challenges')
@@ -229,17 +230,7 @@ async def get_challenges() -> AsyncIterable[dict[str, str]]:
         logger.error('Failed fetching challenges!')
         exit(1)
 
-    for challenge in challenges:
-        id = challenge['id']
-        challenge_path = f'/api/v1/challenges/{id}'
-        url = urljoin(CONFIG['base_url'], challenge_path)
-
-        content = await fetch_json(url)
-        if not content or not isinstance(content, dict):
-            logger.warning(f'Failed fetching challenge with id "{id}"!')
-            continue
-
-        yield content
+    return challenges
 
 
 def get_clean_filename(url: str) -> str:
@@ -276,7 +267,22 @@ async def fetch_resources(content: str, filepath: str = '.') -> str:
     return content
 
 
-async def fetch_challenge(challenge: dict[str, str], hostname: str, template: Template) -> None:
+async def fetch_readme(challenge: dict[str, str], template: Template, filename: str) -> None:
+    async with aiofiles.open(filename, 'w+', encoding='utf-8') as file:
+        rendered = template.render(challenge=challenge)
+        await file.write(rendered)
+
+
+async def fetch_challenge(challenge_info: dict[str, str], hostname: str, template: Template) -> None:
+    id = challenge_info['id']
+    challenge_path = f'/api/v1/challenges/{id}'
+    url = urljoin(CONFIG['base_url'], challenge_path)
+
+    challenge = await fetch_json(url)
+    if not challenge or not isinstance(challenge, dict):
+        logger.warning(f'Failed fetching challenge with id "{id}"!')
+        return
+
     category = re.sub(CONFIG['blacklist'], '', challenge['category']).strip()
     name = re.sub(CONFIG['blacklist'], '', challenge['name']).strip()
     logger.info(f'[{category}] {name}')
@@ -287,20 +293,21 @@ async def fetch_challenge(challenge: dict[str, str], hostname: str, template: Te
         logger.info(f'Creating directory {filepath}')
         os.makedirs(filepath)
 
-    if not CONFIG['no_resources']:
-        challenge['description'] = await fetch_resources(challenge['description'], filepath)
+    fetch_resources_task = fetch_resources(challenge['description'], filepath) \
+        if not CONFIG['no_resources'] \
+        else None
 
-    async with aiofiles.open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as file:
-        rendered = template.render(challenge=challenge)
-        await file.write(rendered)
-
-    if CONFIG['no_files']:
-        return
-
-    if 'files' in challenge:
+    fetch_files_task = []
+    if not CONFIG['no_files'] and 'files' in challenge:
         for filename in challenge['files']:
-            clean_filename = get_clean_filename(filename)
-            await fetch_file(filepath, filename, clean_filename)
+            fetch_files_task.append(fetch_file(filepath, filename))
+
+    await gather(*fetch_files_task)
+
+    if fetch_resources_task:
+        challenge['description'] = await fetch_resources_task
+
+    await fetch_readme(challenge, template, os.path.join(filepath, 'README.md'))
 
 
 async def dump() -> None:
@@ -309,8 +316,9 @@ async def dump() -> None:
     async with aiofiles.open(CONFIG['template'], 'r') as file:
         template = Template(await file.read())
 
-    async for challenge in get_challenges():
-        await fetch_challenge(challenge, hostname, template)
+    await gather(
+        *(fetch_challenge(challenge, hostname, template) for challenge in await get_challenges())
+    )
 
 
 async def main() -> None:
