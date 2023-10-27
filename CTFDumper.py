@@ -29,7 +29,7 @@ CONFIG = {
     'nonce_regex': 'name="nonce"(?:[^<>]+)?value="([0-9a-f]{64})"',
     'base_url': None,
     'no_files': None,
-    'no_resolve_urls': None,
+    'no_resources': None,
     'no_login': None,
     'no_logo': None,
     'template': os.path.join(
@@ -107,7 +107,7 @@ async def setup() -> None:
     )
 
     parser.add_argument(
-        '--no-resolve-urls',
+        '--no-resources',
         help='Do not download resources from embedded urls in description',
         action='store_true'
     )
@@ -135,7 +135,7 @@ async def setup() -> None:
 
     CONFIG['base_url'] = args.url
     CONFIG['no_files'] = args.no_files
-    CONFIG['no_resolve_urls'] = args.no_resolve_urls
+    CONFIG['no_resources'] = args.no_resources
     CONFIG['no_login'] = args.no_login
     CONFIG['no_logo'] = args.no_logo
 
@@ -201,7 +201,7 @@ async def logout() -> None:
     logger.info('Done! Logging you out!')
 
 
-async def fetch(url: str) -> list[dict[str, str]] | dict[str, str] | None:
+async def fetch_json(url: str) -> list[dict[str, str]] | dict[str, str] | None:
     logger.debug(f'Fetching {url}')
 
     response = await session.get(url)
@@ -221,7 +221,7 @@ async def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
 
 async def get_challenges() -> AsyncIterable[dict[str, str]]:
     logger.debug('Getting challenges')
-    challenges = await fetch(urljoin(CONFIG['base_url'], '/api/v1/challenges'))
+    challenges = await fetch_json(urljoin(CONFIG['base_url'], '/api/v1/challenges'))
 
     if not challenges or not isinstance(challenges, list):
         logger.error('Failed fetching challenges!')
@@ -232,7 +232,7 @@ async def get_challenges() -> AsyncIterable[dict[str, str]]:
         challenge_path = f'/api/v1/challenges/{id}'
         url = urljoin(CONFIG['base_url'], challenge_path)
 
-        content = await fetch(url)
+        content = await fetch_json(url)
         if not content or not isinstance(content, dict):
             logger.warning(f'Failed fetching challenge with id "{id}"!')
             continue
@@ -244,7 +244,7 @@ def get_clean_filename(url: str) -> str:
     return os.path.basename(urlsplit(url).path)
 
 
-async def resolve_url(url: str, filepath: str = '.') -> tuple[str, str] | None:
+async def fetch_resource(url: str, filepath: str = '.') -> tuple[str, str] | None:
     async with session.get(url) as response:
         try:
             real_url = response.request_info.url.human_repr()
@@ -263,8 +263,8 @@ async def resolve_url(url: str, filepath: str = '.') -> tuple[str, str] | None:
             return None
 
 
-async def resolve_urls(content: str, filepath: str = '.') -> str:
-    results = await gather(*(resolve_url(match[1], filepath) for match in url_pattern.finditer(content)))
+async def fetch_resources(content: str, filepath: str = '.') -> str:
+    results = await gather(*(fetch_resource(match[1], filepath) for match in url_pattern.finditer(content)))
     results = filter(None, results)
 
     for before, after in results:
@@ -290,8 +290,8 @@ async def dump() -> None:
             logger.info(f'Creating directory {filepath}')
             os.makedirs(filepath)
 
-        if not CONFIG['no_resolve_urls']:
-            challenge['description'] = await resolve_urls(challenge['description'], filepath)
+        if not CONFIG['no_resources']:
+            challenge['description'] = await fetch_resources(challenge['description'], filepath)
 
         async with aiofiles.open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as file:
             rendered = template.render(challenge=challenge)
