@@ -221,7 +221,9 @@ async def fetch_file(filepath: str, filename: str, clean_filename: str) -> None:
 
 async def get_challenges() -> AsyncIterable[dict[str, str]]:
     logger.debug('Getting challenges')
-    challenges = await fetch_json(urljoin(CONFIG['base_url'], '/api/v1/challenges'))
+
+    url = urljoin(CONFIG['base_url'], '/api/v1/challenges')
+    challenges = await fetch_json(url)
 
     if not challenges or not isinstance(challenges, list):
         logger.error('Failed fetching challenges!')
@@ -264,13 +266,41 @@ async def fetch_resource(url: str, filepath: str = '.') -> tuple[str, str] | Non
 
 
 async def fetch_resources(content: str, filepath: str = '.') -> str:
-    results = await gather(*(fetch_resource(match[1], filepath) for match in url_pattern.finditer(content)))
-    results = filter(None, results)
+    results = filter(None, await gather(
+        *(fetch_resource(match[1], filepath) for match in url_pattern.finditer(content))
+    ))
 
     for before, after in results:
         content = content.replace(before, after, 1)
 
     return content
+
+
+async def fetch_challenge(challenge: dict[str, str], hostname: str, template: Template) -> None:
+    category = re.sub(CONFIG['blacklist'], '', challenge['category']).strip()
+    name = re.sub(CONFIG['blacklist'], '', challenge['name']).strip()
+    logger.info(f'[{category}] {name}')
+
+    filepath = os.path.join(hostname, category, name)
+
+    if not await aiofiles.os.path.exists(filepath):
+        logger.info(f'Creating directory {filepath}')
+        os.makedirs(filepath)
+
+    if not CONFIG['no_resources']:
+        challenge['description'] = await fetch_resources(challenge['description'], filepath)
+
+    async with aiofiles.open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as file:
+        rendered = template.render(challenge=challenge)
+        await file.write(rendered)
+
+    if CONFIG['no_files']:
+        return
+
+    if 'files' in challenge:
+        for filename in challenge['files']:
+            clean_filename = get_clean_filename(filename)
+            await fetch_file(filepath, filename, clean_filename)
 
 
 async def dump() -> None:
@@ -280,30 +310,7 @@ async def dump() -> None:
         template = Template(await file.read())
 
     async for challenge in get_challenges():
-        category = re.sub(CONFIG['blacklist'], '', challenge['category']).strip()
-        name = re.sub(CONFIG['blacklist'], '', challenge['name']).strip()
-        logger.info(f'[{category}] {name}')
-
-        filepath = os.path.join(hostname, category, name)
-
-        if not await aiofiles.os.path.exists(filepath):
-            logger.info(f'Creating directory {filepath}')
-            os.makedirs(filepath)
-
-        if not CONFIG['no_resources']:
-            challenge['description'] = await fetch_resources(challenge['description'], filepath)
-
-        async with aiofiles.open(os.path.join(filepath, 'README.md'), 'w+', encoding='utf-8') as file:
-            rendered = template.render(challenge=challenge)
-            await file.write(rendered)
-
-        if CONFIG['no_files']:
-            continue
-
-        if 'files' in challenge:
-            for filename in challenge['files']:
-                clean_filename = get_clean_filename(filename)
-                await fetch_file(filepath, filename, clean_filename)
+        await fetch_challenge(challenge, hostname, template)
 
 
 async def main() -> None:
