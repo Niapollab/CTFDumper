@@ -10,7 +10,7 @@ import os
 import re
 import aiofiles
 import aiofiles.os
-from asyncio import run
+from asyncio import run, gather
 
 
 banner = r"""
@@ -244,31 +244,33 @@ def get_clean_filename(url: str) -> str:
     return os.path.basename(urlsplit(url).path)
 
 
+async def resolve_url(url: str, filepath: str = '.') -> tuple[str, str] | None:
+    async with session.get(url) as response:
+        try:
+            real_url = response.request_info.url.human_repr()
+            logger.debug(f'Fetching {real_url}')
+
+            filename = get_clean_filename(real_url)
+
+            logger.info(f'Downloading {filename} into {filepath}')
+            async with aiofiles.open(os.path.join(filepath, filename), 'wb') as file:
+                async for data in response.content.iter_any():
+                    await file.write(data)
+
+            return (url, f'./{filename}')
+        except Exception:
+            logger.error(f'Failed downloading file from url "{url}"!')
+            return None
+
+
 async def resolve_urls(content: str, filepath: str = '.') -> str:
-    result = content
+    results = await gather(*(resolve_url(match[1], filepath) for match in url_pattern.finditer(content)))
+    results = filter(None, results)
 
-    for match in url_pattern.finditer(content):
-        url = match[1]
+    for before, after in results:
+        content = content.replace(before, after, 1)
 
-        async with session.get(url) as response:
-            try:
-                real_url = response.request_info.url.human_repr()
-                logger.debug(f'Fetching {real_url}')
-
-                filename = get_clean_filename(real_url)
-
-                logger.info(f'Downloading {filename} into {filepath}')
-                async with aiofiles.open(os.path.join(filepath, filename), 'wb') as file:
-                    async for data in response.content.iter_any():
-                        await file.write(data)
-
-                url = f'./{filename}'
-                result = result.replace(match[0], url, 1)
-
-            except Exception:
-                logger.error(f'Failed downloading file from url "{url}"!')
-
-    return result
+    return content
 
 
 async def dump() -> None:
