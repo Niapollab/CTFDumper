@@ -236,19 +236,19 @@ def get_clean_filename(url: str) -> str:
 
 
 async def fetch_resource(url: str, filepath: str = '.') -> tuple[str, str] | None:
-    async with session.get(url) as response:
         try:
-            real_url = response.request_info.url.human_repr()
-            logger.debug(f'Fetching {real_url}')
+            async with session.get(url) as response:
+                real_url = response.request_info.url.human_repr()
+                logger.debug(f'Fetching {real_url}')
 
-            filename = get_clean_filename(real_url)
+                filename = get_clean_filename(real_url)
 
-            logger.info(f'Downloading {filename} into {filepath}')
-            async with aiofiles.open(os.path.join(filepath, filename), 'wb') as file:
-                async for data in response.content.iter_any():
-                    await file.write(data)
+                logger.info(f'Downloading {filename} into {filepath}')
+                async with aiofiles.open(os.path.join(filepath, filename), 'wb') as file:
+                    async for data in response.content.iter_any():
+                        await file.write(data)
 
-            return (url, f'./{filename}')
+                return (url, f'./{filename}')
         except Exception:
             logger.error(f'Failed downloading file from url "{url}"!')
             return None
