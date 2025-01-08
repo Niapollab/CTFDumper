@@ -4,6 +4,7 @@ from argparse import ArgumentParser
 from asyncio import run, gather
 from getpass import getpass
 from jinja2 import Template
+from pathvalidate import sanitize_filename
 from urllib.parse import urljoin, urlparse, urlsplit
 import aiofiles
 import aiofiles.os
@@ -33,8 +34,7 @@ CONFIG = {
     'template': os.path.join(
         os.path.dirname(os.path.realpath(__file__)), 'templates/default.md'
     ),
-    'verbose': logging.INFO,
-    'blacklist': r'[^a-zA-Z0-9_\-\. ]'
+    'verbose': logging.INFO
 }
 
 
@@ -117,12 +117,6 @@ async def setup() -> None:
     )
 
     parser.add_argument(
-        '--trust-all',
-        help='Will make directory as the name of the challenge, the slashes(/) character will automatically be replaced with underscores(_)',
-        action='store_true'
-    )
-
-    parser.add_argument(
         '-t',
         '--template',
         help='Custom template path'
@@ -157,9 +151,6 @@ async def setup() -> None:
 
     if args.stdin and not CONFIG['password']:
         CONFIG['password'] = getpass()
-
-    if args.trust_all:
-        CONFIG['blacklist'] = '/'
 
     if args.verbose:
         CONFIG['verbose'] = logging.DEBUG
@@ -217,17 +208,6 @@ async def fetch_json(url: str) -> list[dict[str, str]] | dict[str, str] | None:
     return json['data'] if response.ok and json['success'] else None
 
 
-async def fetch_file(filepath: str, filename: str) -> None:
-    clean_filename = get_clean_filename(filename)
-
-    logger.info(f'Downloading {clean_filename} into {filepath}')
-    response = await session.get(urljoin(CONFIG['base_url'], filename))
-
-    async with aiofiles.open(os.path.join(filepath, clean_filename), 'wb') as file:
-        async for data in response.content.iter_any():
-            await file.write(data)
-
-
 async def get_challenges() -> list[dict[str, str]]:
     logger.debug('Getting challenges')
 
@@ -245,7 +225,7 @@ def get_clean_filename(url: str) -> str:
     return os.path.basename(urlsplit(url).path)
 
 
-async def fetch_resource(url: str, filepath: str = '.') -> tuple[str, str] | None:
+async def fetch_file(url: str, filepath: str = '.') -> tuple[str, str] | None:
         try:
             async with session.get(url) as response:
                 real_url = response.request_info.url.human_repr()
@@ -264,9 +244,9 @@ async def fetch_resource(url: str, filepath: str = '.') -> tuple[str, str] | Non
             return None
 
 
-async def fetch_resources(content: str, filepath: str = '.') -> str:
+async def fetch_files(content: str, filepath: str = '.') -> str:
     results = filter(None, await gather(
-        *(fetch_resource(match[1], filepath) for match in url_pattern.finditer(content))
+        *(fetch_file(match[1], filepath) for match in url_pattern.finditer(content))
     ))
 
     for before, after in results:
@@ -290,10 +270,12 @@ async def fetch_challenge(challenge_info: dict[str, str], hostname: str, templat
     if not challenge or not isinstance(challenge, dict):
         logger.warning(f'Failed fetching challenge with id "{id}"!')
         return
-
-    category = re.sub(CONFIG['blacklist'], '', challenge['category']).strip()
-    name = re.sub(CONFIG['blacklist'], '', challenge['name']).strip()
-    logger.info(f'[{category}] {name}')
+    
+    category, name = (
+        sanitize_filename(challenge[field]).replace("/", "_")
+        for field in ("category", "name")
+    )
+    logger.info(f"[{category}] {name}")
 
     filepath = os.path.join(hostname, category, name)
 
@@ -301,14 +283,15 @@ async def fetch_challenge(challenge_info: dict[str, str], hostname: str, templat
         logger.info(f'Creating directory {filepath}')
         os.makedirs(filepath)
 
-    fetch_resources_task = fetch_resources(challenge['description'], filepath) \
+    fetch_resources_task = fetch_files(challenge['description'], filepath) \
         if not CONFIG['no_resources'] \
         else None
 
     fetch_files_task = []
     if not CONFIG['no_files'] and 'files' in challenge:
         for filename in challenge['files']:
-            fetch_files_task.append(fetch_file(filepath, filename))
+            url = urljoin(CONFIG['base_url'], filename)
+            fetch_files_task.append(fetch_file(url, filepath))
 
     await gather(*fetch_files_task)
 
