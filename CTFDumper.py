@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-from argparse import ArgumentParser
-from jinja2 import Template
 from aiohttp import ClientSession
+from argparse import ArgumentParser
+from asyncio import run, gather
+from getpass import getpass
+from jinja2 import Template
 from urllib.parse import urljoin, urlparse, urlsplit
+import aiofiles
+import aiofiles.os
 import logging
 import logging.config
 import os
 import re
-import aiofiles
-import aiofiles.os
-from asyncio import run, gather
 
 
 banner = r"""
@@ -72,6 +73,12 @@ async def setup() -> None:
         '-p',
         '--password',
         help='Platform password'
+    )
+
+    parser.add_argument(
+        '--stdin',
+        help='Read password from STDIN, if "password" is not specified',
+        action='store_true'
     )
 
     parser.add_argument(
@@ -147,6 +154,9 @@ async def setup() -> None:
         async with aiofiles.open(args.auth_file, 'r') as file:
             CONFIG['username'] = (await file.readline()).strip()
             CONFIG['password'] = (await file.readline()).strip()
+
+    if args.stdin and not CONFIG['password']:
+        CONFIG['password'] = getpass()
 
     if args.trust_all:
         CONFIG['blacklist'] = '/'
